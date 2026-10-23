@@ -94,10 +94,15 @@ def plot_strikes_3d(candidates=None, today=None):
             ndy:norm(p.dy,dyMin,dyMax), raw:p}};
   }});
 
-  // color by Bid/Days (daily yield): bottom 30% = blue, top 30% = red, middle 60% uses full hue range
+  // compute lo/hi as 30th/70th percentile by count
+  var sortedNdy = pts.map(function(p){{return p.ndy;}}).sort(function(a,b){{return a-b;}});
+  var loIdx = Math.floor(sortedNdy.length*0.30);
+  var hiIdx = Math.floor(sortedNdy.length*0.70);
+  var LO = sortedNdy[loIdx], HI = sortedNdy[hiIdx];
+
+  // color by Bid/Days (daily yield): bottom 30% by count = blue, top 30% by count = red
   function dotColor(ndy01){{
-    var lo=0.30, hi=0.70;
-    var t=ndy01<lo?0:ndy01>hi?1:(ndy01-lo)/(hi-lo);
+    var t=ndy01<LO?0:ndy01>HI?1:(ndy01-LO)/(HI-LO);
     var hue=Math.round((1-t)*240);
     return "hsl("+hue+",80%,42%)";
   }}
@@ -105,14 +110,14 @@ def plot_strikes_3d(candidates=None, today=None):
   // vertical legend on the left: bar runs top=high(red) to bottom=low(blue)
   var LX=16, LY=100, LW=12, LH=400;
   function drawLegend(){{
-    var lo=0.30, hi=0.70;
     // gradient bar — top=high yield (red), bottom=low yield (blue)
+    // sample dotColor at uniform ndy steps so bar matches actual color mapping
     var grad=ctx.createLinearGradient(0,LY,0,LY+LH);
-    grad.addColorStop(0,   "hsl(0,80%,42%)");
-    grad.addColorStop(1-hi,"hsl(0,80%,42%)");
-    grad.addColorStop(0.50,"hsl(120,80%,42%)");
-    grad.addColorStop(1-lo,"hsl(240,80%,42%)");
-    grad.addColorStop(1,   "hsl(240,80%,42%)");
+    var steps=40;
+    for(var si=0;si<=steps;si++){{
+      var nv=si/steps;
+      grad.addColorStop(1-nv, dotColor(nv));
+    }}
     ctx.save();
     ctx.beginPath();
     ctx.roundRect(LX,LY,LW,LH,3);
@@ -125,7 +130,7 @@ def plot_strikes_3d(candidates=None, today=None):
     ctx.fillText("(¢/d)",  LX+LW/2,LY-3);
     // ticks: fixed breakpoints + every actual data dy value
     ctx.font="10px system-ui,sans-serif"; ctx.textAlign="left";
-    var tickNdys=[0, lo, 0.50, hi, 1.0];
+    var tickNdys=[0, LO, 0.50, HI, 1.0];
     dys.forEach(function(dy){{ tickNdys.push(norm(dy,dyMin,dyMax)); }});
     tickNdys.sort(function(a,b){{return a-b;}});
     var kept=[];
@@ -179,26 +184,63 @@ def plot_strikes_3d(candidates=None, today=None):
     }}); ctx.setLineDash([]); ctx.restore();
     // axes
     var o=projectV(-.5,-.5,-.5);
-    [[projectV(.5,-.5,-.5),"#2563eb"],[projectV(-.5,.5,-.5),"#16a34a"],[projectV(-.5,-.5,.5),"#dc2626"]].forEach(function(pair){{
+    [[projectV(.5,-.5,-.5),"#2563eb"],[projectV(-.5,.5,-.5),"#16a34a"],[projectV(-.5,-.5,.5),"#0b0b0b"]].forEach(function(pair){{
       ctx.save(); ctx.strokeStyle=pair[1]; ctx.lineWidth=2;
       ctx.beginPath(); ctx.moveTo(o.sx,o.sy); ctx.lineTo(pair[0].sx,pair[0].sy); ctx.stroke(); ctx.restore();
     }});
     // axis ticks
     ctx.font="14px system-ui,sans-serif";
+    // helper: ensure normal points away from the projected scene centre
+    var sceneC=projectV(0,0,0);
+    function outwardNorm(p, ndx, ndy){{
+      var toCx=sceneC.sx-p.sx, toCy=sceneC.sy-p.sy;
+      var dot=ndx*toCx+ndy*toCy;
+      return dot>0?{{dx:-ndx,dy:-ndy}}:{{dx:ndx,dy:ndy}};
+    }}
+    // X-axis (days, blue): label rotated to axis direction, placed outside bounding box
+    var xAxisDir=(function(){{
+      var p0=projectV(-.5,-.5,-.5), p1=projectV(.5,-.5,-.5);
+      var dx=p1.sx-p0.sx, dy=p1.sy-p0.sy, len=Math.hypot(dx,dy)||1;
+      return {{dx:dx/len, dy:dy/len}};
+    }})();
+    var xAngle=Math.atan2(xAxisDir.dy, xAxisDir.dx);
     var xVals=[...new Set(xs)].sort(function(a,b){{return a-b;}});
     xVals.forEach(function(xv){{
       var p=projectV(norm(xv,xMin,xMax)-.5,-.5,-.5);
-      ctx.fillStyle="#2563eb"; ctx.fillText(xv+"d",p.sx+3,p.sy+3);
+      var raw={{dx:-xAxisDir.dy, dy:xAxisDir.dx}};
+      var n=outwardNorm(p, raw.dx, raw.dy);
+      ctx.save();
+      ctx.fillStyle="#2563eb";
+      ctx.translate(p.sx+n.dx*22, p.sy+n.dy*22);
+      ctx.rotate(xAngle);
+      ctx.textAlign="center"; ctx.textBaseline="top";
+      ctx.fillText(xv+"d", 0, 0);
+      ctx.restore();
     }});
+    // Y-axis (strike, green): same treatment
+    var yAxisDir=(function(){{
+      var p0=projectV(-.5,-.5,-.5), p1=projectV(-.5,.5,-.5);
+      var dx=p1.sx-p0.sx, dy=p1.sy-p0.sy, len=Math.hypot(dx,dy)||1;
+      return {{dx:dx/len, dy:dy/len}};
+    }})();
+    var yAngle=Math.atan2(yAxisDir.dy, yAxisDir.dx);
     for(var i=0;i<=4;i++){{
       var yv=yMin+i*(yMax-yMin)/4;
       var p=projectV(-.5,norm(yv,yMin,yMax)-.5,-.5);
-      ctx.fillStyle="#16a34a"; ctx.fillText("$"+Math.round(yv),p.sx+3,p.sy+3);
+      var raw={{dx:-yAxisDir.dy, dy:yAxisDir.dx}};
+      var n=outwardNorm(p, raw.dx, raw.dy);
+      ctx.save();
+      ctx.fillStyle="#16a34a";
+      ctx.translate(p.sx+n.dx*22, p.sy+n.dy*22);
+      ctx.rotate(yAngle+Math.PI/2);
+      ctx.textAlign="center"; ctx.textBaseline="top";
+      ctx.fillText("$"+Math.round(yv), 0, 0);
+      ctx.restore();
     }}
     for(var i=0;i<=4;i++){{
       var zv=zMin+i*(zMax-zMin)/4;
       var p=projectV(-.5,-.5,norm(zv,zMin,zMax)-.5);
-      ctx.fillStyle="#dc2626"; ctx.fillText("$"+zv.toFixed(2),p.sx+3,p.sy+3);
+      ctx.fillStyle="#0b0b0b"; ctx.fillText("$"+zv.toFixed(2),p.sx+3,p.sy+3);
     }}
     // grid lines — same expiry (along strike axis) and same strike (along expiry axis)
     ctx.save(); ctx.lineWidth=0.9; ctx.globalAlpha=0.28;
